@@ -1,6 +1,6 @@
 <?php
 
-namespace App;
+namespace App\Commands;
 
 use Tempest\Console\ConsoleCommand;
 use Tempest\Console\HasConsole;
@@ -14,7 +14,7 @@ final class DataGenerateCommand
     #[ConsoleCommand(middleware: [ForceMiddleware::class])]
     public function __invoke(
         int|string $iterations = 1_000_000,
-        string $outputPath = __DIR__ . '/../data/data.csv',
+        string $outputPath = __DIR__ . '/../../data/data.csv',
     ): void
     {
         $iterations = parse_int(str_replace([',', '_'], '', $iterations));

@@ -1,6 +1,6 @@
 <?php
 
-namespace App;
+namespace App\Commands;
 
 final class Visit
 {

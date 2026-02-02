@@ -7,7 +7,7 @@ composer install
 php tempest data:generate
 ```
 
-Next, implement your solution in `app/DataParseCommand.php`. You can always run the parse command to check your work:
+Next, implement your solution in `app/Parser.php`. You can always run the parse command to check your work:
 
 ```sh
 php tempest data:parse

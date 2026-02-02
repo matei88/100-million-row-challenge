@@ -1,6 +1,6 @@
 <?php
 
-namespace App;
+namespace App\Commands;
 
 use Tempest\Console\ConsoleCommand;
 use Tempest\Console\ExitCode;
@@ -13,9 +13,9 @@ final class DataValidateCommand
     #[ConsoleCommand]
     public function __invoke(): ExitCode
     {
-        $inputPath = __DIR__ . '/../data/test-data.csv';
-        $actualPath = __DIR__ . '/../data/test-data-actual.json';
-        $expectedPath = __DIR__ . '/../data/test-data-expected.json';
+        $inputPath = __DIR__ . '/../../data/test-data.csv';
+        $actualPath = __DIR__ . '/../../data/test-data-actual.json';
+        $expectedPath = __DIR__ . '/../../data/test-data-expected.json';
 
         $this->console->call('data:parse', [$inputPath, $actualPath]);
 
