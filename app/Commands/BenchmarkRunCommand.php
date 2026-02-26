@@ -222,7 +222,6 @@ final class BenchmarkRunCommand
     private function processPR(array $pr): ?float
     {
         $prNumber = $pr['number'];
-        $commitSha = $pr['head']['sha'];
         $cloneUrl = $pr['head']['repo']['clone_url'] ?? null;
         $branch = $pr['head']['ref'];
 
@@ -290,6 +289,30 @@ final class BenchmarkRunCommand
             $this->prError($prNumber, "Failed to parse benchmark results");
             $this->githubComment($prNumber, 'Benchmarking failed: Unable to parse results');
             return null;
+        }
+
+        if ($meanTime < 10) {
+            // Second run for fast PRs
+            $command = sprintf(
+                "hyperfine --warmup 2 --runs 5 --export-json %s 'cd %s && %s'",
+                escapeshellarg($resultFile),
+                escapeshellarg($benchmarkDir),
+                $parseCommand,
+            );
+
+            $this->prLine($prNumber, $command);
+
+            exec($command, $output, $returnCode);
+
+            if ($returnCode !== 0 || ! file_exists($resultFile)) {
+                $this->prError($prNumber, "Failed to run benchmark");
+                $this->githubComment($prNumber, 'Benchmarking failed');
+                return null;
+            }
+
+            // Parse results
+            $results = json_decode(file_get_contents($resultFile), true);
+            $meanTime = $results['results'][0]['mean'] ?? null;
         }
 
         // Verify results
