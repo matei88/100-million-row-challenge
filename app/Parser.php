@@ -9,7 +9,7 @@ use function shmop_delete;
 
 final class Parser
 {
-    private const int WORKER_COUNT = 2;
+    private const int WORKER_COUNT = 10;
     private const int MEMORY_SIZE = 10 * 1024 * 1024;
 
     public function __construct(
