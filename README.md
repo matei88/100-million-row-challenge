@@ -6,6 +6,8 @@
     
 Welcome to the 100-million-row challenge in PHP! Your goal is to parse a data set of page visits into a JSON file. This repository contains all you need to get started locally. Submitting an entry is as easy as sending a pull request to this repository. This competition will run for two weeks: from Feb 24 to March 15, 2026. When it's done, the top three fastest solutions will win a prize; there's also a dedicated prize for a single-core solution, and a participation prize that everyone can win! 
 
+![Story and the Server](./.github/stormy.png)
+
 ## Getting started
 
 To submit a solution, you'll have to [fork this repository](https://github.com/tempestphp/100-million-row-challenge/fork), and clone it locally. Once done, install the project dependencies and generate a dataset for local development:
