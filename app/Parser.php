@@ -11,14 +11,13 @@ use function shmop_delete;
 class Parser
 {
     private const int WORKER_COUNT = 8;
-    private const int  MEMORY_SIZE  = 5 * 1024 * 1024; // 5MB per worker
+    private const int  MEMORY_SIZE  = 3 * 1024 * 1024;
 
     private \Shmop $sharedMemoryId;
 
     private array $routeMap = [];
     private array $routeList = [];
     private array $paddedRouteIds = [];
-    private array $dateCache = [];
 
     public function __construct()
     {
@@ -132,7 +131,7 @@ class Parser
     private function performTask(string $inputPath, int $start, int $end): array
     {
         $handle = fopen($inputPath, 'rb');
-        stream_set_read_buffer($handle, 256 * 1024); // 256KB buffer
+        stream_set_read_buffer($handle, 0); // 256KB buffer
         fseek($handle, $start);
 
         if ($start !== 0) {
