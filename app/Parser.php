@@ -13,6 +13,8 @@ class Parser
     private const int WORKER_COUNT = 8;
     private const int  MEMORY_SIZE  = 5 * 1024 * 1024; // 5MB per worker
 
+    private const int DATE_EPOCH_TIMESTAMP = 1704060000;
+
     private \Shmop $sharedMemoryId;
 
     private array $routeMap = [];
@@ -37,7 +39,7 @@ class Parser
         $routeList = [];
 
         foreach (Visit::all() as $id => $visit) {
-            $path = parse_url($visit->uri, PHP_URL_PATH);
+            $path = substr($visit->uri, 25);
             $routeMap[$path] = $id;
             $routeList[$id]  = $path;
         }
@@ -67,17 +69,21 @@ class Parser
 
                 $data = $this->performTask($inputPath, $start, $end);
 
-                $serialized = serialize($data);
+                $buffer = '';
+                $dateCache = [];
 
-                if (strlen($serialized) > self::MEMORY_SIZE) {
+                foreach ($data as $flatKey => $count) {
+                    $routeId = (int) substr($flatKey, 0, 4);
+                    $date = substr($flatKey, 4);
+                    $encodedDate = ($dateCache[$date] ??= $this->encodeDate($date));
+                    $buffer .= pack('nnN', $routeId, $encodedDate, $count);
+                }
+
+                if (strlen($buffer) > self::MEMORY_SIZE) {
                     throw new \RuntimeException('Shared memory overflow');
                 }
 
-                shmop_write(
-                    $this->sharedMemoryId,
-                    $serialized,
-                    $i * self::MEMORY_SIZE
-                );
+                shmop_write($this->sharedMemoryId, $buffer, $i * self::MEMORY_SIZE);
 
                 exit(0);
             }
@@ -105,15 +111,25 @@ class Parser
                 continue;
             }
 
-            $data = unserialize($raw);
+            $raw = shmop_read($this->sharedMemoryId, $i * self::MEMORY_SIZE, self::MEMORY_SIZE);
 
-            foreach ($data as $routeId => $dates) {
-                $route = $this->routeList[$routeId];
+            $recordSize = 8; // 2 + 2 + 4
+            // Find actual data length (trim null padding)
+            $len = strlen(rtrim($raw, "\0"));
+            $offset = 0;
 
-                foreach ($dates as $date => $count) {
-                    $results[$route][$date] =
-                        ($results[$route][$date] ?? 0) + $count;
+            while ($offset + $recordSize <= $len) {
+                $record = unpack('nrouteId/ndateDays/Ncount', $raw, $offset);
+                $offset += $recordSize;
+
+                if (!isset($this->routeList[$record['routeId']])) {
+                    continue;
                 }
+
+                $route = $this->routeList[$record['routeId']];
+                $date  = $this->decodeDate($record['dateDays']);
+
+                $results[$route][$date] = ($results[$route][$date] ?? 0) + $record['count'];
             }
         }
 
@@ -131,31 +147,39 @@ class Parser
             fgets($handle); // skip partial line
         }
 
-        // Preallocate outer array (faster, avoids dynamic growth)
-        $values = array_fill(0, count($this->routeList), []);
+        $values = [];
 
         while (ftell($handle) < $end && ($line = fgets($handle)) !== false) {
-            $commaPos = strpos($line, ',');
-
-            if ($commaPos === false) {
-                continue;
-            }
-
-            $route = substr($line, 0, $commaPos);
+            $route = strtok($line, ',');
+            $date = strtok('T');
             $routeId = $this->routeMap[$route] ?? null;
 
             if ($routeId === null) {
-                continue; // skip unknown routes safely
+                continue;
             }
 
-            $date = trim(substr($line, $commaPos + 1));
+            $flatKey = sprintf('%04d', $routeId) . $date;
 
-            $values[$routeId][$date] =
-                ($values[$routeId][$date] ?? 0) + 1;
+            $count = &$values[$flatKey];
+            if ($count !== null) {
+                $count++;
+            } else {
+                $values[$flatKey] = 1;
+            }
         }
 
         fclose($handle);
 
         return $values;
+    }
+
+    private function encodeDate(string $date): int
+    {
+        return (int) ((strtotime($date) - self::DATE_EPOCH_TIMESTAMP) / 86400);
+    }
+
+    private function decodeDate(int $days): string
+    {
+        return date('Y-m-d', self::DATE_EPOCH_TIMESTAMP + ($days * 86400));
     }
 }
