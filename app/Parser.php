@@ -13,8 +13,6 @@ class Parser
     private const int WORKER_COUNT = 8;
     private const int  MEMORY_SIZE  = 5 * 1024 * 1024; // 5MB per worker
 
-    private const int DATE_EPOCH_TIMESTAMP = 1704060000;
-
     private \Shmop $sharedMemoryId;
 
     private array $routeMap = [];
@@ -172,15 +170,5 @@ class Parser
         fclose($handle);
 
         return $values;
-    }
-
-    private function encodeDate(string $date): int
-    {
-        return (int) ((strtotime($date) - self::DATE_EPOCH_TIMESTAMP) / 86400);
-    }
-
-    private function decodeDate(int $days): string
-    {
-        return date('Y-m-d', self::DATE_EPOCH_TIMESTAMP + ($days * 86400));
     }
 }
