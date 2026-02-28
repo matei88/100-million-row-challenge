@@ -19,6 +19,8 @@ class Parser
 
     private array $routeMap = [];
     private array $routeList = [];
+    private array $paddedRouteIds = [];
+    private array $dateCache = [];
 
     public function __construct()
     {
@@ -35,17 +37,12 @@ class Parser
 
     private function buildRouteMap(): void
     {
-        $routeMap  = [];
-        $routeList = [];
-
         foreach (Visit::all() as $id => $visit) {
             $path = substr($visit->uri, 25);
-            $routeMap[$path] = $id;
-            $routeList[$id]  = $path;
+            $this->routeMap[$path] = $id;
+            $this->routeList[$id]  = $path;
+            $this->paddedRouteIds[$id] = sprintf('%04d', $id);
         }
-
-        $this->routeMap  = $routeMap;
-        $this->routeList = $routeList;
     }
 
     public function parse(string $inputPath, string $outputPath): void
@@ -70,12 +67,11 @@ class Parser
                 $data = $this->performTask($inputPath, $start, $end);
 
                 $buffer = '';
-                $dateCache = [];
 
                 foreach ($data as $flatKey => $count) {
                     $routeId = (int) substr($flatKey, 0, 4);
                     $date = substr($flatKey, 4);
-                    $encodedDate = ($dateCache[$date] ??= $this->encodeDate($date));
+                    $encodedDate = ($this->dateCache[$date] ??= $this->encodeDate($date));
                     $buffer .= pack('nnN', $routeId, $encodedDate, $count);
                 }
 
@@ -135,6 +131,7 @@ class Parser
     private function performTask(string $inputPath, int $start, int $end): array
     {
         $handle = fopen($inputPath, 'rb');
+        stream_set_read_buffer($handle, 256 * 1024); // 256KB buffer
         fseek($handle, $start);
 
         if ($start !== 0) {
@@ -158,7 +155,7 @@ class Parser
                 continue;
             }
 
-            $flatKey = sprintf('%04d', $routeId) . $date;
+            $flatKey = $this->paddedRouteIds[$routeId] . $date;
 
             $count = &$values[$flatKey];
             if ($count !== null) {
