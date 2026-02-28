@@ -2,158 +2,160 @@
 
 namespace App;
 
+use App\Commands\Visit;
 use function shmop_open;
 use function shmop_read;
 use function shmop_write;
 use function shmop_delete;
 
-final class Parser
+class Parser
 {
-    private const int WORKER_COUNT = 10;
-    private const int MEMORY_SIZE = 10 * 1024 * 1024;
+    private const int WORKER_COUNT = 8;
+    private const int  MEMORY_SIZE  = 5 * 1024 * 1024; // 5MB per worker
 
-    public function __construct(
-        private ?\Shmop $sharedMemoryId = null,
-    ) {
-        $sharedMemoryKey = ftok(__FILE__, 't');
-        /*$existing = @shmop_open($sharedMemoryKey, 'w', 0, 0);
-        if ($existing !== false) {
-            shmop_delete($existing);
-        }*/
+    private \Shmop $sharedMemoryId;
 
-        $this->sharedMemoryId = shmop_open($sharedMemoryKey, 'c', 0644, (self::WORKER_COUNT * self::MEMORY_SIZE));
-    }
+    private array $routeMap = [];
+    private array $routeList = [];
 
-    public function __destruct()
+    public function __construct()
     {
-        shmop_delete($this->sharedMemoryId);
+        // Build a static route map BEFORE fork
+        $this->buildRouteMap();
+
+        $this->sharedMemoryId = shmop_open(
+            ftok(__FILE__, 't'),
+            'c',
+            0644,
+            self::WORKER_COUNT * self::MEMORY_SIZE
+        );
     }
 
-    /**
-     * @throws \JsonException
-     */
+    private function buildRouteMap(): void
+    {
+        $routeMap  = [];
+        $routeList = [];
+
+        foreach (Visit::all() as $id => $visit) {
+            $path = parse_url($visit->uri, PHP_URL_PATH);
+            $routeMap[$path] = $id;
+            $routeList[$id]  = $path;
+        }
+
+        $this->routeMap  = $routeMap;
+        $this->routeList = $routeList;
+    }
+
     public function parse(string $inputPath, string $outputPath): void
     {
-        $pids = [];
-        $chunks = $this->get_file_chunks($inputPath);
+        $fileSize  = filesize($inputPath);
+        $chunkSize = (int) ceil($fileSize / self::WORKER_COUNT);
 
-        // Fork processes
+        $pids = [];
+
         for ($i = 0; $i < self::WORKER_COUNT; $i++) {
             $pid = pcntl_fork();
 
             if ($pid === -1) {
-                throw new \RuntimeException('Could not fork process');
+                throw new \RuntimeException('Fork failed');
             }
 
-            if ($pid) {
-                // Parent process
-                $pids[] = $pid;
-            } else {
-                // Child process
-                $this->performTask($inputPath, $chunks[$i][0], $chunks[$i][1], $i);
-                exit(0); // Exit child process
+            if ($pid === 0) {
+                // Worker
+                $start = $i * $chunkSize;
+                $end   = min(($i + 1) * $chunkSize, $fileSize);
+
+                $data = $this->performTask($inputPath, $start, $end);
+
+                $serialized = serialize($data);
+
+                if (strlen($serialized) > self::MEMORY_SIZE) {
+                    throw new \RuntimeException('Shared memory overflow');
+                }
+
+                shmop_write(
+                    $this->sharedMemoryId,
+                    $serialized,
+                    $i * self::MEMORY_SIZE
+                );
+
+                exit(0);
             }
+
+            $pids[] = $pid;
         }
 
+        // Wait workers
         foreach ($pids as $pid) {
             pcntl_waitpid($pid, $status);
         }
 
+        // Merge results
         $results = [];
+
         for ($i = 0; $i < self::WORKER_COUNT; $i++) {
-            $header = shmop_read($this->sharedMemoryId, $i * self::MEMORY_SIZE, 4);
-            $length = unpack('N', $header)[1];
-            #echo "Worker $i: serialized length = $length, MEMORY_SIZE = " . self::MEMORY_SIZE . "\n";
+            $raw = shmop_read(
+                $this->sharedMemoryId,
+                $i * self::MEMORY_SIZE,
+                self::MEMORY_SIZE
+            );
 
-            $lines = shmop_read($this->sharedMemoryId, $i * self::MEMORY_SIZE + 4, $length);
-            $chunk = igbinary_unserialize($lines);
+            $raw = rtrim($raw, "\0");
+            if ($raw === '') {
+                continue;
+            }
 
-            foreach ($chunk as $route => $dates) {
+            $data = unserialize($raw);
+
+            foreach ($data as $routeId => $dates) {
+                $route = $this->routeList[$routeId];
+
                 foreach ($dates as $date => $count) {
-                    $results[$route][$date] = ($results[$route][$date] ?? 0) + $count;
+                    $results[$route][$date] =
+                        ($results[$route][$date] ?? 0) + $count;
                 }
             }
         }
 
         shmop_delete($this->sharedMemoryId);
 
-        foreach ($results as &$dates) {
-            ksort($dates);
-        }
-
-        unset($dates);
-
-        file_put_contents($outputPath, json_encode($results, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
+        file_put_contents($outputPath, json_encode($results));
     }
 
-    /**
-     * Get the chunks that each process needs to process with start and end position.
-     * These positions are aligned to \n chars because we use `fgets()` to read
-     * which itself reads till a \n character.
-     *
-     * @return array<int, array{0: int, 1: int}>
-     */
-    private function get_file_chunks(string $file): array
+    private function performTask(string $inputPath, int $start, int $end): array
     {
-        $size = filesize($file);
+        $handle = fopen($inputPath, 'rb');
+        fseek($handle, $start);
 
-        if (self::WORKER_COUNT === 1) {
-            $chunk_size = $size;
-        } else {
-            $chunk_size = (int)($size / self::WORKER_COUNT);
+        if ($start !== 0) {
+            fgets($handle); // skip partial line
         }
 
-        $fp = fopen($file, 'rb');
+        // Preallocate outer array (faster, avoids dynamic growth)
+        $values = array_fill(0, count($this->routeList), []);
 
-        $chunks = [];
-        $chunk_start = 0;
-        while ($chunk_start < $size) {
-            $chunk_end = min($size, $chunk_start + $chunk_size);
+        while (ftell($handle) < $end && ($line = fgets($handle)) !== false) {
+            $commaPos = strpos($line, ',');
 
-            if ($chunk_end < $size) {
-                fseek($fp, $chunk_end);
-                fgets($fp);
-                $chunk_end = ftell($fp);
+            if ($commaPos === false) {
+                continue;
             }
 
-            $chunks[] = [
-                $chunk_start,
-                $chunk_end
-            ];
+            $route = substr($line, 0, $commaPos);
+            $routeId = $this->routeMap[$route] ?? null;
 
-            $chunk_start = $chunk_end;
-        }
-
-        fclose($fp);
-        return $chunks;
-    }
-
-    private function performTask(string $file, int $chunk_start, int $chunk_end, int $processId): void
-    {
-        $values = [];
-
-        $handle = fopen($file, 'rb');
-        stream_set_read_buffer($handle, 0);
-        fseek($handle, $chunk_start);
-
-        while (($line = fgets($handle)) !== false && ftell($handle) <= $chunk_end) {
-            // start line before `/blog/` char 19
-            $line = substr($line, 19);
-            $route = strtok($line, ',');
-            $date = strtok('T');
-
-            $count = &$values[$route][$date];
-            if ($count !== null) {
-                $count++;
-            } else {
-                $values[$route][$date] = 1;
+            if ($routeId === null) {
+                continue; // skip unknown routes safely
             }
+
+            $date = trim(substr($line, $commaPos + 1));
+
+            $values[$routeId][$date] =
+                ($values[$routeId][$date] ?? 0) + 1;
         }
 
         fclose($handle);
 
-        $serialized = igbinary_serialize($values);
-        $packed = pack('N', strlen($serialized)) . $serialized; // 4-byte length prefix
-        shmop_write($this->sharedMemoryId, $packed, $processId * self::MEMORY_SIZE);
+        return $values;
     }
 }
