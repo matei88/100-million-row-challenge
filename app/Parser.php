@@ -69,10 +69,9 @@ class Parser
                 $buffer = '';
 
                 foreach ($data as $flatKey => $count) {
-                    $routeId = (int) substr($flatKey, 0, 4);
-                    $date = substr($flatKey, 4);
-                    $encodedDate = ($this->dateCache[$date] ??= $this->encodeDate($date));
-                    $buffer .= pack('nnN', $routeId, $encodedDate, $count);
+                    $routeId = intdiv($flatKey, 100_000_000);
+                    $dateInt  = $flatKey % 100_000_000;
+                    $buffer .= pack('nnN', $routeId, $dateInt, $count);
                 }
 
                 if (strlen($buffer) > self::MEMORY_SIZE) {
@@ -117,7 +116,11 @@ class Parser
                 }
 
                 $route = $this->routeList[$record['routeId']];
-                $date  = $this->decodeDate($record['dateDays']);
+                $date = sprintf('%04d-%02d-%02d',
+                    intdiv($record['dateInt'], 10000),
+                    intdiv($record['dateInt'] % 10000, 100),
+                    $record['dateInt'] % 100
+                );
 
                 $results[$route][$date] = ($results[$route][$date] ?? 0) + $record['count'];
             }
@@ -150,12 +153,13 @@ class Parser
             $route = strtok($line, ',');
             $date = strtok('T');
             $routeId = $this->routeMap[$route] ?? null;
+            $dateInt = (int) str_replace('-', '', $date);
 
             if ($routeId === null) {
                 continue;
             }
 
-            $flatKey = $this->paddedRouteIds[$routeId] . $date;
+            $flatKey = $this->paddedRouteIds[$routeId] * 100_000_000 + $dateInt;
 
             $count = &$values[$flatKey];
             if ($count !== null) {
