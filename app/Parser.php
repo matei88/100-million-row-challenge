@@ -83,7 +83,8 @@ class Parser
                     throw new \RuntimeException('Shared memory overflow');
                 }
 
-                shmop_write($this->sharedMemoryId, $buffer, $i * self::MEMORY_SIZE);
+                $lenHeader = pack('N', strlen($buffer));
+                shmop_write($this->sharedMemoryId, $lenHeader . $buffer, $i * self::MEMORY_SIZE);
 
                 exit(0);
             }
@@ -100,21 +101,14 @@ class Parser
         $results = [];
 
         for ($i = 0; $i < self::WORKER_COUNT; $i++) {
-            $raw = shmop_read(
-                $this->sharedMemoryId,
-                $i * self::MEMORY_SIZE,
-                self::MEMORY_SIZE
-            );
-
-            $raw = rtrim($raw, "\0");
-            if ($raw === '') {
+            $lenData = unpack('N', shmop_read($this->sharedMemoryId, $i * self::MEMORY_SIZE, 4));
+            $len = $lenData[1];
+            if ($len === 0) {
                 continue;
             }
-
-            $raw = shmop_read($this->sharedMemoryId, $i * self::MEMORY_SIZE, self::MEMORY_SIZE);
+            $raw = shmop_read($this->sharedMemoryId, $i * self::MEMORY_SIZE + 4, $len);
 
             $recordSize = 8; // 2 + 2 + 4
-            // Find actual data length (trim null padding)
             $len = strlen(rtrim($raw, "\0"));
             $offset = 0;
 
@@ -149,7 +143,13 @@ class Parser
 
         $values = [];
 
-        while (ftell($handle) < $end && ($line = fgets($handle)) !== false) {
+        $pos = $start;
+        if ($start !== 0) {
+            $pos += strlen(fgets($handle));
+        }
+
+        while ($pos < $end && ($line = fgets($handle)) !== false) {
+            $pos += strlen($line);
             $route = strtok($line, ',');
             $date = strtok('T');
             $routeId = $this->routeMap[$route] ?? null;
