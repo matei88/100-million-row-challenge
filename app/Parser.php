@@ -3,17 +3,10 @@
 namespace App;
 
 use App\Commands\Visit;
-use function shmop_open;
-use function shmop_read;
-use function shmop_write;
-use function shmop_delete;
 
 class Parser
 {
     private const int WORKER_COUNT = 8;
-    private const int  MEMORY_SIZE  = 3 * 1024 * 1024;
-
-    private \Shmop $sharedMemoryId;
 
     private array $routeMap = [];
     private array $routeList = [];
@@ -23,13 +16,11 @@ class Parser
     {
         // Build a static route map BEFORE fork
         $this->buildRouteMap();
+    }
 
-        $this->sharedMemoryId = shmop_open(
-            ftok(__FILE__, 't'),
-            'c',
-            0644,
-            self::WORKER_COUNT * self::MEMORY_SIZE
-        );
+    private function workerFile(int $i): string
+    {
+        return sys_get_temp_dir() . "/100m_worker_{$i}.bin";
     }
 
     private function buildRouteMap(): void
@@ -71,13 +62,7 @@ class Parser
                     $buffer .= pack('nnN', $routeId, $dateInt, $count);
                 }
 
-                if (strlen($buffer) > self::MEMORY_SIZE) {
-                    throw new \RuntimeException('Shared memory overflow');
-                }
-
-                $lenHeader = pack('N', strlen($buffer));
-                shmop_write($this->sharedMemoryId, $lenHeader . $buffer, $i * self::MEMORY_SIZE);
-
+                file_put_contents($this->workerFile($i), $buffer);
                 exit(0);
             }
 
@@ -93,15 +78,12 @@ class Parser
         $results = [];
 
         for ($i = 0; $i < self::WORKER_COUNT; $i++) {
-            $lenData = unpack('N', shmop_read($this->sharedMemoryId, $i * self::MEMORY_SIZE, 4));
-            $len = $lenData[1];
-            if ($len === 0) {
-                continue;
-            }
-            $raw = shmop_read($this->sharedMemoryId, $i * self::MEMORY_SIZE + 4, $len);
+            $path = $this->workerFile($i);
+            $raw = file_get_contents($path);
+            unlink($path);
 
             $recordSize = 8; // 2 + 2 + 4
-            $len = strlen(rtrim($raw, "\0"));
+            $len = strlen($raw);
             $offset = 0;
 
             while ($offset + $recordSize <= $len) {
@@ -122,8 +104,6 @@ class Parser
                 $results[$route][$date] = ($results[$route][$date] ?? 0) + $record['count'];
             }
         }
-
-        shmop_delete($this->sharedMemoryId);
 
         file_put_contents($outputPath, json_encode($results));
     }
