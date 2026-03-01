@@ -26,7 +26,7 @@ final class Parser
     private function buildRouteMap(): void
     {
         foreach (Visit::all() as $id => $visit) {
-            $path = substr($visit->uri, 25);
+            $path = $visit->uri; //substr($visit->uri, 25);
             $this->routeMap[$path] = $id;
             $this->routeList[$id] = $path;
         }
@@ -42,6 +42,9 @@ final class Parser
         }
     }
 
+    /**
+     * @throws \JsonException
+     */
     public function parse(string $inputPath, string $outputPath): void
     {
         $fileSize = filesize($inputPath);
@@ -101,7 +104,7 @@ final class Parser
         $results = [];
         $base = 0;
         for ($p = 0; $p < $pathCount; $p++) {
-            $route = $this->routeList[$p];
+            $route = substr($this->routeList[$p], 19);
             for ($d = 0; $d < $dateCount; $d++) {
                 $n = $counts[$base + $d];
                 if ($n === 0) {
@@ -112,7 +115,7 @@ final class Parser
             $base += $dateCount;
         }
 
-        file_put_contents($outputPath, json_encode($results));
+        file_put_contents($outputPath, json_encode($results, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
     }
 
     private function performTask(string $inputPath, int $start, int $end): array
@@ -177,7 +180,7 @@ final class Parser
                     }
                 }
 
-                // Skip to next line — find next newline
+                // Skip to the next line - find the next newline
                 $nl = strpos($chunk, "\n", $c);
                 if ($nl === false) break;
                 $p = $nl + 1;
@@ -188,7 +191,7 @@ final class Parser
         return $buckets;
     }
 
-    private function writeBuckets(int $workerId, array &$buckets): void
+    private function writeBuckets(int $workerId, array $buckets): void
     {
         $pathCount = count($this->routeList);
         $dateCount = count($this->dateList);
