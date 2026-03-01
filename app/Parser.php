@@ -4,19 +4,17 @@ namespace App;
 
 use App\Commands\Visit;
 
-class Parser
+final class Parser
 {
-    private const int WORKER_COUNT = 10;
-    private const int DATE_STRIDE = 2000;
+    private const int WORKER_COUNT = 8;
 
     private array $routeMap = [];
     private array $routeList = [];
-    private array $dateMap = [];
-    private array $dateList = [];
+    private array $dateChars = [];  // "5-01-24" => packed 2-byte id
+    private array $dateList = [];   // id => "2025-01-24"
 
     public function __construct()
     {
-        // Build a static route map BEFORE fork
         $this->buildRouteMap();
     }
 
@@ -30,21 +28,35 @@ class Parser
         foreach (Visit::all() as $id => $visit) {
             $path = substr($visit->uri, 25);
             $this->routeMap[$path] = $id;
-            $this->routeList[$id]  = $path;
+            $this->routeList[$id] = $path;
         }
 
+        // Pre-pack date lookup: "5-01-24" (7 chars after year digit) => 2-byte packed id
         $epoch = strtotime('2021-01-01');
-        for ($d = 0; $d < 2000; $d++) {
-            $date = date('Y-m-d', $epoch + $d * 86400);
-            $this->dateMap[$date] = $d;
-            $this->dateList[$d] = $date;
+        $dateCount = 0;
+        for ($d = 0; $d < 2200; $d++) {
+            $full = date('Y-m-d', $epoch + $d * 86400);
+            $this->dateChars[substr($full, 3)] = pack('v', $dateCount);
+            $this->dateList[$dateCount] = $full;
+            $dateCount++;
         }
     }
 
     public function parse(string $inputPath, string $outputPath): void
     {
-        $fileSize  = filesize($inputPath);
+        $fileSize = filesize($inputPath);
         $chunkSize = (int) ceil($fileSize / self::WORKER_COUNT);
+
+        // Align chunks to newlines
+        $boundaries = [0];
+        $handle = fopen($inputPath, 'rb');
+        for ($i = 1; $i < self::WORKER_COUNT; $i++) {
+            fseek($handle, $i * $chunkSize);
+            fgets($handle);
+            $boundaries[] = ftell($handle);
+        }
+        $boundaries[] = $fileSize;
+        fclose($handle);
 
         $pids = [];
 
@@ -56,53 +68,48 @@ class Parser
             }
 
             if ($pid === 0) {
-                // Worker
-                $start = $i * $chunkSize;
-                $end   = min(($i + 1) * $chunkSize, $fileSize);
-
-                $data = $this->performTask($inputPath, $start, $end);
-
-                $buffer = '';
-
-                foreach ($data as $flatKey => $count) {
-                    $routeId = intdiv($flatKey, self::DATE_STRIDE);
-                    $dateId  = $flatKey % self::DATE_STRIDE;
-                    $buffer .= pack('nnN', $routeId, $dateId, $count);
-                }
-
-                file_put_contents($this->workerFile($i), $buffer);
+                $buckets = $this->performTask($inputPath, $boundaries[$i], $boundaries[$i + 1]);
+                $this->writeBuckets($i, $buckets);
                 exit(0);
             }
 
             $pids[] = $pid;
         }
 
-        // Wait workers
         foreach ($pids as $pid) {
             pcntl_waitpid($pid, $status);
         }
 
-        // Merge results
-        $results = [];
+        // Merge
+        $pathCount = count($this->routeList);
+        $dateCount = count($this->dateList);
+        $counts = array_fill(0, $pathCount * $dateCount, 0);
 
         for ($i = 0; $i < self::WORKER_COUNT; $i++) {
             $path = $this->workerFile($i);
             $raw = file_get_contents($path);
             unlink($path);
 
-            $recordSize = 8; // 2 + 2 + 4
-            $len = strlen($raw);
-            $offset = 0;
-
-            while ($offset + $recordSize <= $len) {
-                $record = unpack('nrouteId/ndateId/Ncount', $raw, $offset);
-                $offset += $recordSize;
-
-                $route = $this->routeList[$record['routeId']];
-                $date  = $this->dateList[$record['dateId']];
-
-                $results[$route][$date] = ($results[$route][$date] ?? 0) + $record['count'];
+            $childCounts = unpack('V*', $raw);
+            $j = 0;
+            foreach ($childCounts as $val) {
+                $counts[$j++] += $val;
             }
+        }
+
+        // Build results
+        $results = [];
+        $base = 0;
+        for ($p = 0; $p < $pathCount; $p++) {
+            $route = $this->routeList[$p];
+            for ($d = 0; $d < $dateCount; $d++) {
+                $n = $counts[$base + $d];
+                if ($n === 0) {
+                    continue;
+                }
+                $results[$route][$this->dateList[$d]] = $n;
+            }
+            $base += $dateCount;
         }
 
         file_put_contents($outputPath, json_encode($results));
@@ -111,39 +118,92 @@ class Parser
     private function performTask(string $inputPath, int $start, int $end): array
     {
         $handle = fopen($inputPath, 'rb');
-        stream_set_read_buffer($handle, 256 * 1024); // 256KB buffer
         fseek($handle, $start);
 
-        $values = [];
+        $pathIds = &$this->routeMap;
+        $dateChars = &$this->dateChars;
+        $pathCount = count($this->routeList);
 
-        $pos = $start;
-        if ($start !== 0) {
-            $pos += strlen(fgets($handle));
-        }
+        // Each bucket is a string of packed 2-byte dateIds
+        $buckets = array_fill(0, $pathCount, '');
 
-        while ($pos < $end && ($line = fgets($handle)) !== false) {
-            $pos += strlen($line);
-            $route = strtok($line, ',');
-            $date = strtok('T');
-            $routeId = $this->routeMap[$route] ?? null;
-            $dateId = $this->dateMap[$date] ?? null;
+        $bytesProcessed = 0;
+        $toProcess = $end - $start;
 
-            if ($routeId === null || $dateId === null) {
-                continue;
+        while ($bytesProcessed < $toProcess) {
+            $remaining = $toProcess - $bytesProcessed;
+            $chunk = fread($handle, min($remaining, 131072));
+            if (!$chunk) {
+                break;
             }
 
-            $flatKey = $routeId * self::DATE_STRIDE + $dateId;
+            $lastNl = strrpos($chunk, "\n");
+            if ($lastNl === false) {
+                break;
+            }
 
-            $count = &$values[$flatKey];
-            if ($count !== null) {
-                $count++;
-            } else {
-                $values[$flatKey] = 1;
+            // Rewind past incomplete trailing line
+            $tail = strlen($chunk) - $lastNl - 1;
+            if ($tail > 0) {
+                fseek($handle, -$tail, SEEK_CUR);
+            }
+            $bytesProcessed += $lastNl + 1;
+
+            // Parse chunk: find comma, extract path and date
+            $p = 0;
+
+            // If first chunk starts mid-line (shouldn't with boundary alignment, but safety)
+            if ($bytesProcessed === $lastNl + 1 && $start > 0) {
+                $firstNl = strpos($chunk, "\n");
+                if ($firstNl !== false) {
+                    $p = $firstNl + 1;
+                }
+            }
+
+            while ($p < $lastNl) {
+                $c = strpos($chunk, ",", $p);
+                if ($c === false || $c >= $lastNl) {
+                    break;
+                }
+
+                $pathStr = substr($chunk, $p, $c - $p);
+                $pathId = $pathIds[$pathStr] ?? null;
+
+                if ($pathId !== null) {
+                    // Date is at comma + 4 (skip "202"), take 7 chars ("5-01-24")
+                    $dateKey = substr($chunk, $c + 4, 7);
+                    if (isset($dateChars[$dateKey])) {
+                        $buckets[$pathId] .= $dateChars[$dateKey];
+                    }
+                }
+
+                // Skip to next line — find next newline
+                $nl = strpos($chunk, "\n", $c);
+                if ($nl === false) break;
+                $p = $nl + 1;
             }
         }
 
         fclose($handle);
+        return $buckets;
+    }
 
-        return $values;
+    private function writeBuckets(int $workerId, array &$buckets): void
+    {
+        $pathCount = count($this->routeList);
+        $dateCount = count($this->dateList);
+        $counts = array_fill(0, $pathCount * $dateCount, 0);
+
+        $base = 0;
+        foreach ($buckets as $bucket) {
+            if ($bucket !== '') {
+                foreach (array_count_values(unpack('v*', $bucket)) as $dateId => $n) {
+                    $counts[$base + $dateId] += $n;
+                }
+            }
+            $base += $dateCount;
+        }
+
+        file_put_contents($this->workerFile($workerId), pack('V*', ...$counts));
     }
 }
