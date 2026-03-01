@@ -6,7 +6,7 @@ use App\Commands\Visit;
 
 class Parser
 {
-    private const int WORKER_COUNT = 8;
+    private const int WORKER_COUNT = 10;
     private const int DATE_STRIDE = 2000;
 
     private array $routeMap = [];
@@ -95,7 +95,7 @@ class Parser
             $offset = 0;
 
             while ($offset + $recordSize <= $len) {
-                $record = unpack('nrouteId/ndateDays/Ncount', $raw, $offset);
+                $record = unpack('nrouteId/ndateId/Ncount', $raw, $offset);
                 $offset += $recordSize;
 
                 $route = $this->routeList[$record['routeId']];
@@ -111,7 +111,7 @@ class Parser
     private function performTask(string $inputPath, int $start, int $end): array
     {
         $handle = fopen($inputPath, 'rb');
-        stream_set_read_buffer($handle, 0); // 256KB buffer
+        stream_set_read_buffer($handle, 256 * 1024); // 256KB buffer
         fseek($handle, $start);
 
         $values = [];
@@ -125,8 +125,8 @@ class Parser
             $pos += strlen($line);
             $route = strtok($line, ',');
             $date = strtok('T');
-            $routeId = &$this->routeMap[$route];
-            $dateId = &$this->dateMap[$date];
+            $routeId = $this->routeMap[$route] ?? null;
+            $dateId = $this->dateMap[$date] ?? null;
 
             if ($routeId === null || $dateId === null) {
                 continue;
