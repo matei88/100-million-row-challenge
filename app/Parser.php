@@ -7,10 +7,12 @@ use App\Commands\Visit;
 class Parser
 {
     private const int WORKER_COUNT = 8;
+    private const int DATE_STRIDE = 2000;
 
     private array $routeMap = [];
     private array $routeList = [];
-    private array $paddedRouteIds = [];
+    private array $dateMap = [];
+    private array $dateList = [];
 
     public function __construct()
     {
@@ -29,7 +31,13 @@ class Parser
             $path = substr($visit->uri, 25);
             $this->routeMap[$path] = $id;
             $this->routeList[$id]  = $path;
-            $this->paddedRouteIds[$id] = sprintf('%04d', $id);
+        }
+
+        $epoch = strtotime('2021-01-01');
+        for ($d = 0; $d < 2000; $d++) {
+            $date = date('Y-m-d', $epoch + $d * 86400);
+            $this->dateMap[$date] = $d;
+            $this->dateList[$d] = $date;
         }
     }
 
@@ -57,9 +65,9 @@ class Parser
                 $buffer = '';
 
                 foreach ($data as $flatKey => $count) {
-                    $routeId = intdiv($flatKey, 100_000_000);
-                    $dateInt  = $flatKey % 100_000_000;
-                    $buffer .= pack('nnN', $routeId, $dateInt, $count);
+                    $routeId = intdiv($flatKey, self::DATE_STRIDE);
+                    $dateId  = $flatKey % self::DATE_STRIDE;
+                    $buffer .= pack('nnN', $routeId, $dateId, $count);
                 }
 
                 file_put_contents($this->workerFile($i), $buffer);
@@ -90,16 +98,8 @@ class Parser
                 $record = unpack('nrouteId/ndateDays/Ncount', $raw, $offset);
                 $offset += $recordSize;
 
-                if (!isset($this->routeList[$record['routeId']])) {
-                    continue;
-                }
-
                 $route = $this->routeList[$record['routeId']];
-                $date = sprintf('%04d-%02d-%02d',
-                    intdiv($record['dateInt'], 10000),
-                    intdiv($record['dateInt'] % 10000, 100),
-                    $record['dateInt'] % 100
-                );
+                $date  = $this->dateList[$record['dateId']];
 
                 $results[$route][$date] = ($results[$route][$date] ?? 0) + $record['count'];
             }
@@ -114,10 +114,6 @@ class Parser
         stream_set_read_buffer($handle, 0); // 256KB buffer
         fseek($handle, $start);
 
-        if ($start !== 0) {
-            fgets($handle); // skip partial line
-        }
-
         $values = [];
 
         $pos = $start;
@@ -129,14 +125,14 @@ class Parser
             $pos += strlen($line);
             $route = strtok($line, ',');
             $date = strtok('T');
-            $routeId = $this->routeMap[$route] ?? null;
-            $dateInt = (int) str_replace('-', '', $date);
+            $routeId = &$this->routeMap[$route];
+            $dateId = &$this->dateMap[$date];
 
-            if ($routeId === null) {
+            if ($routeId === null || $dateId === null) {
                 continue;
             }
 
-            $flatKey = $this->paddedRouteIds[$routeId] * 100_000_000 + $dateInt;
+            $flatKey = $routeId * self::DATE_STRIDE + $dateId;
 
             $count = &$values[$flatKey];
             if ($count !== null) {
