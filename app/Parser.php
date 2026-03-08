@@ -257,8 +257,10 @@ final class Parser
         $base = 0;
         foreach ($buckets as $bucket) {
             if ($bucket !== '') {
-                foreach (array_count_values(unpack('v*', $bucket)) as $dateId => $n) {
-                    $counts[$base + $dateId] += $n;
+                $len = strlen($bucket);
+                for ($i = 0; $i < $len; $i += 2) {
+                    $dateId = ord($bucket[$i]) | (ord($bucket[$i + 1]) << 8);
+                    $counts[$base + $dateId]++;
                 }
             }
             $base += $this->dateCount;
