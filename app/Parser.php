@@ -6,7 +6,7 @@ use App\Commands\Visit;
 
 final class Parser
 {
-    private const int WORKER_COUNT = 8;
+    private const int WORKER_COUNT = 12;
 
     private array $routeMap = [];
     private array $routeList = [];
