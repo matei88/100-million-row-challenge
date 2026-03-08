@@ -266,10 +266,7 @@ final class Parser
             $base += $this->dateCount;
         }
 
-        $binary = '';
-        for ($i = 0; $i < $total; $i += 5000) {
-            $binary .= pack('V*', ...array_slice($counts, $i, 5000));
-        }
+        $binary = pack('V*', ...$counts);
         file_put_contents($this->workerFile($workerId), $binary);
     }
 }
