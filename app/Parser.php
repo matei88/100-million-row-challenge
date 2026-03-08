@@ -221,26 +221,23 @@ final class Parser
             $p = 0;
 
             while ($p < $lastNl) {
-                $c = strpos($chunk, ",", $p);
-                if ($c === false || $c >= $lastNl) {
+                $nl = strpos($chunk, "\n", $p);
+                if ($nl === false) {
                     break;
                 }
 
-                // Extract slug: skip 25-char URL prefix
-                $slug = substr($chunk, $p + 25, $c - $p - 25);
+                // Fixed-length suffix: ,YYYY-MM-DDTHH:MM:SS+00:00\n = 27 chars
+                // So comma is at nl-26, date key (Y-MM-DD) starts at nl-22
+                $slug = substr($chunk, $p + 25, $nl - $p - 51);
                 $pathId = $pathIds[$slug] ?? null;
 
                 if ($pathId !== null) {
-                    $dateKey = substr($chunk, $c + 4, 7);
+                    $dateKey = substr($chunk, $nl - 22, 7);
                     if ($dateChars[$dateKey]) {
                         $buckets[$pathId] .= $dateChars[$dateKey];
                     }
                 }
 
-                $nl = strpos($chunk, "\n", $c);
-                if ($nl === false) {
-                    break;
-                }
                 $p = $nl + 1;
             }
         }
