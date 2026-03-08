@@ -157,10 +157,14 @@ final class Parser
             $raw = file_get_contents($path);
             unlink($path);
 
-            $childCounts = unpack('V*', $raw);
+            $len = strlen($raw);
             $j = 0;
-            foreach ($childCounts as $val) {
-                $counts[$j++] += $val;
+            $chunkBytes = 20000; // 5000 ints
+            for ($offset = 0; $offset < $len; $offset += $chunkBytes) {
+                $slice = unpack('V*', substr($raw, $offset, $chunkBytes));
+                foreach ($slice as $v) {
+                    $counts[$j++] += $v;
+                }
             }
         }
 
@@ -228,7 +232,7 @@ final class Parser
 
                 if ($pathId !== null) {
                     $dateKey = substr($chunk, $c + 4, 7);
-                    if (isset($dateChars[$dateKey])) {
+                    if ($dateChars[$dateKey]) {
                         $buckets[$pathId] .= $dateChars[$dateKey];
                     }
                 }
@@ -247,7 +251,8 @@ final class Parser
 
     private function writeBuckets(int $workerId, array &$buckets): void
     {
-        $counts = array_fill(0, $this->pathCount * $this->dateCount, 0);
+        $total = $this->pathCount * $this->dateCount;
+        $counts = array_fill(0, $total, 0);
 
         $base = 0;
         foreach ($buckets as $bucket) {
@@ -259,6 +264,10 @@ final class Parser
             $base += $this->dateCount;
         }
 
-        file_put_contents($this->workerFile($workerId), pack('V*', ...$counts));
+        $binary = '';
+        for ($i = 0; $i < $total; $i += 5000) {
+            $binary .= pack('V*', ...array_slice($counts, $i, 5000));
+        }
+        file_put_contents($this->workerFile($workerId), $binary);
     }
 }
