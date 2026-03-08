@@ -125,24 +125,49 @@ class Parser
             $pos += strlen(fgets($handle));
         }
 
-        while ($pos < $end && ($line = fgets($handle)) !== false) {
-            $pos += strlen($line);
-            $route = strtok($line, ',');
-            $date = strtok('T');
-            $routeId = $this->routeMap[$route] ?? null;
-            $dateId = $this->dateMap[$date] ?? null;
+        $bufferSize = 131072; // 128KB
+        $leftover = '';
 
-            if ($routeId === null || $dateId === null) {
+        while ($pos < $end) {
+            $readSize = min($bufferSize, $end - $pos + $bufferSize); // read past $end to finish last line
+            $chunk = fread($handle, $readSize);
+            if ($chunk === false || $chunk === '') {
+                break;
+            }
+
+            $chunk = $leftover . $chunk;
+            $lastNewline = strrpos($chunk, "\n");
+
+            if ($lastNewline === false) {
+                $leftover = $chunk;
+                $pos += strlen($chunk);
                 continue;
             }
 
-            $flatKey = $routeId * self::DATE_STRIDE + $dateId;
+            $leftover = substr($chunk, $lastNewline + 1);
+            $process = substr($chunk, 0, $lastNewline);
+            $pos += strlen($chunk);
 
-            $count = &$values[$flatKey];
-            if ($count !== null) {
-                $count++;
-            } else {
-                $values[$flatKey] = 1;
+            $lineStart = 0;
+            while (($nl = strpos($process, "\n", $lineStart)) !== false) {
+                $comma = strpos($process, ',', $lineStart);
+                $route = substr($process, $lineStart, $comma - $lineStart);
+                $date = substr($process, $comma + 1, 10); // "YYYY-MM-DD" is always 10 chars
+
+                $routeId = $this->routeMap[$route] ?? null;
+                $dateId = $this->dateMap[$date] ?? null;
+
+                if ($routeId !== null && $dateId !== null) {
+                    $flatKey = $routeId * self::DATE_STRIDE + $dateId;
+                    $count = &$values[$flatKey];
+                    if ($count !== null) {
+                        $count++;
+                    } else {
+                        $values[$flatKey] = 1;
+                    }
+                }
+
+                $lineStart = $nl + 1;
             }
         }
 
