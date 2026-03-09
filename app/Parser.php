@@ -194,8 +194,16 @@ final class Parser
 
         $pathIds = &$this->routeMap;
         $dateChars = &$this->dateChars;
+        $pathCount = $this->pathCount;
 
-        $buckets = array_fill(0, $this->pathCount, '');
+        // Pre-allocate bucket strings: worst-case all lines go to one route
+        // ~70 bytes per line, 2 bytes output per hit, 4x safety margin
+        $initSize = (int)(($end - $start) / 70 / $pathCount) * 8 + 4096;
+        $buckets = [];
+        $offsets = array_fill(0, $pathCount, 0);
+        for ($i = 0; $i < $pathCount; $i++) {
+            $buckets[$i] = str_repeat("\0", $initSize);
+        }
 
         $toProcess = $end - $start;
         $leftover = '';
@@ -235,8 +243,18 @@ final class Parser
 
                 if ($pathId !== null) {
                     $dateKey = substr($chunk, $nl - 22, 7);
-                    if ($dateChars[$dateKey]) {
-                        $buckets[$pathId] .= $dateChars[$dateKey];
+                    $dv = $dateChars[$dateKey] ?? null;
+                    if ($dv !== null) {
+                        $o = $offsets[$pathId];
+                        if ($o >= $initSize) {
+                            $initSize *= 2;
+                            for ($ri = 0; $ri < $pathCount; $ri++) {
+                                $buckets[$ri] = str_pad($buckets[$ri], $initSize, "\0");
+                            }
+                        }
+                        $buckets[$pathId][$o] = $dv[0];
+                        $buckets[$pathId][$o + 1] = $dv[1];
+                        $offsets[$pathId] = $o + 2;
                     }
                 }
 
@@ -245,22 +263,21 @@ final class Parser
         }
 
         fclose($handle);
-        return $buckets;
+        return [$buckets, $offsets];
     }
 
-    private function writeBuckets(int $workerId, array &$buckets): void
+    private function writeBuckets(int $workerId, array $result): void
     {
+        [$buckets, $offsets] = $result;
         $total = $this->pathCount * $this->dateCount;
         $counts = array_fill(0, $total, 0);
 
         $base = 0;
-        foreach ($buckets as $bucket) {
-            if ($bucket !== '') {
-                $len = strlen($bucket);
-                for ($i = 0; $i < $len; $i += 2) {
-                    $dateId = ord($bucket[$i]) | (ord($bucket[$i + 1]) << 8);
-                    $counts[$base + $dateId]++;
-                }
+        foreach ($buckets as $pathId => $bucket) {
+            $len = $offsets[$pathId];
+            for ($i = 0; $i < $len; $i += 2) {
+                $dateId = ord($bucket[$i]) | (ord($bucket[$i + 1]) << 8);
+                $counts[$base + $dateId]++;
             }
             $base += $this->dateCount;
         }
