@@ -197,27 +197,29 @@ final class Parser
 
         $buckets = array_fill(0, $this->pathCount, '');
 
-        $bytesProcessed = 0;
         $toProcess = $end - $start;
+        $leftover = '';
+        $bytesRead = 0;
 
-        while ($bytesProcessed < $toProcess) {
-            $remaining = $toProcess - $bytesProcessed;
-            $chunk = fread($handle, $remaining > 131072 ? 131072 : $remaining);
-            if (!$chunk) {
+        while ($bytesRead < $toProcess) {
+            $readSize = $toProcess - $bytesRead;
+            if ($readSize > 131072) {
+                $readSize = 131072;
+            }
+            $raw = fread($handle, $readSize);
+            if ($raw === '' || $raw === false) {
                 break;
             }
+            $bytesRead += strlen($raw);
 
+            $chunk = $leftover . $raw;
             $lastNl = strrpos($chunk, "\n");
             if ($lastNl === false) {
-                break;
+                $leftover = $chunk;
+                continue;
             }
 
-            $tail = strlen($chunk) - $lastNl - 1;
-            if ($tail > 0) {
-                fseek($handle, -$tail, SEEK_CUR);
-            }
-            $bytesProcessed += $lastNl + 1;
-
+            $leftover = substr($chunk, $lastNl + 1);
             $p = 0;
 
             while ($p < $lastNl) {
